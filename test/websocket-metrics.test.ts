@@ -439,29 +439,61 @@ describe('grouping', () => {
     );
   });
 
-  it('closes the socket and rethrows when groupBy throws', async () => {
-    const error = new Error('groupBy failed');
-    const { MetricsWebSocket } = setup({
-      groupBy() {
-        throw error;
+  it('stores a key that is not a string under its string form', async () => {
+    const { metrics, connect } = setup({
+      groupBy: ((url: string) => (url.endsWith('/a') ? 1 : '1')) as never,
+    });
+    const [a, b] = await Promise.all([connect('/a'), connect('/b')]);
+
+    a.send('abc');
+    b.send('abc');
+
+    const { total, byKey } = metrics.getSnapshot();
+    expect(byKey).toEqual({
+      '1': {
+        sent: { bytes: 6, messages: 2 },
+        received: { bytes: 0, messages: 0 },
       },
     });
-    const close = vi.spyOn(NativeWebSocket.prototype, 'close');
-
-    let thrown: unknown;
-    try {
-      new MetricsWebSocket(`${baseUrl}/`);
-    } catch (caught) {
-      thrown = caught;
-    }
-
-    expect(thrown).toBe(error);
-    expect(close).toHaveBeenCalledTimes(1);
-    const socket = close.mock.contexts[0] as WebSocket;
-    expect(socket.readyState).toBe(NativeWebSocket.CLOSING);
-    await once(socket, 'close');
-    expect(socket.readyState).toBe(NativeWebSocket.CLOSED);
+    expect(total.sent).toEqual({ bytes: 6, messages: 2 });
   });
+
+  it.each(['MetricsWebSocket', 'a subclass that overrides close()'])(
+    'closes the socket and rethrows when groupBy throws in %s',
+    async (target) => {
+      const error = new Error('groupBy failed');
+      const { MetricsWebSocket } = setup({
+        groupBy() {
+          throw error;
+        },
+      });
+      class LoggingWebSocket extends MetricsWebSocket {
+        readonly #log: string[] = [];
+
+        override close(code?: number, reason?: string): void {
+          this.#log.push('close');
+          super.close(code, reason);
+        }
+      }
+      const Constructor =
+        target === 'MetricsWebSocket' ? MetricsWebSocket : LoggingWebSocket;
+      const close = vi.spyOn(NativeWebSocket.prototype, 'close');
+
+      let thrown: unknown;
+      try {
+        new Constructor(`${baseUrl}/`);
+      } catch (caught) {
+        thrown = caught;
+      }
+
+      expect(thrown).toBe(error);
+      expect(close).toHaveBeenCalledTimes(1);
+      const socket = close.mock.contexts[0] as WebSocket;
+      expect(socket.readyState).toBe(NativeWebSocket.CLOSING);
+      await once(socket, 'close');
+      expect(socket.readyState).toBe(NativeWebSocket.CLOSED);
+    },
+  );
 });
 
 describe('subscribe', () => {

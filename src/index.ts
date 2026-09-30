@@ -186,11 +186,14 @@ export function createWebSocketMetrics(
     constructor(url: string | URL, protocols?: string | string[]) {
       super(url, protocols);
       try {
-        this.#groupKey = groupBy(this.url);
+        // String() keeps byKey, whose keys are strings, in line with total
+        // even if a JavaScript caller returns another type.
+        this.#groupKey = String(groupBy(this.url));
       } catch (error) {
         // The caller never receives this socket, so it must not stay open.
-        // close() without arguments does not throw.
-        this.close();
+        // super.close() bypasses subclass overrides, which cannot run before
+        // their own fields exist, and without arguments it does not throw.
+        super.close();
         throw error;
       }
       this.addEventListener('message', (event) => {
