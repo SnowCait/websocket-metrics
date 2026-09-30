@@ -18,10 +18,13 @@ import { createWebSocketMetrics } from 'websocket-metrics';
 const { WebSocket: MetricsWebSocket, metrics } = createWebSocketMetrics();
 
 const socket = new MetricsWebSocket('wss://example.com');
-socket.send('hello');
 
-const snapshot = metrics.getSnapshot();
-console.log(snapshot.total.sent.bytes);
+socket.addEventListener('open', () => {
+  socket.send('hello');
+
+  const snapshot = metrics.getSnapshot();
+  console.log(snapshot.total.sent.bytes);
+});
 
 const unsubscribe = metrics.subscribe((snapshot) => {
   console.log(snapshot.total.received.bytes);

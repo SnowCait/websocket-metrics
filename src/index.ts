@@ -134,10 +134,7 @@ export function createWebSocketMetrics(): CreateWebSocketMetricsResult {
     if (typeof payload === 'string') {
       return utf8ByteLength(payload);
     }
-    if (payload instanceof Blob) {
-      return payload.size;
-    }
-    return payload.byteLength;
+    return 'size' in payload ? payload.size : payload.byteLength;
   };
 
   const getSnapshot = (): WebSocketMetricsSnapshot =>

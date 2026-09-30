@@ -174,6 +174,27 @@ describe('sent metrics', () => {
     });
   });
 
+  it('counts a Blob created in another realm', async () => {
+    const { metrics, connect } = setup();
+    const socket = await connect();
+    const frame = document.body.appendChild(document.createElement('iframe'));
+
+    try {
+      const frameWindow = frame.contentWindow as Window & typeof globalThis;
+      const foreignBlob = new frameWindow.Blob(['あい', new Uint8Array(4)]);
+      expect(foreignBlob instanceof Blob).toBe(false);
+
+      socket.send(foreignBlob);
+    } finally {
+      frame.remove();
+    }
+
+    expect(metrics.getSnapshot().total.sent).toEqual({
+      bytes: 6 + 4,
+      messages: 1,
+    });
+  });
+
   it('counts an ArrayBuffer', async () => {
     const { metrics, connect } = setup();
     const socket = await connect();
