@@ -10,7 +10,7 @@ export interface WebSocketTrafficMetrics {
 
 export interface WebSocketMetricsSnapshot {
   readonly total: WebSocketTrafficMetrics;
-  readonly byUrl: ReadonlyMap<string, WebSocketTrafficMetrics>;
+  readonly byKey: Readonly<Record<string, WebSocketTrafficMetrics>>;
 }
 
 export type WebSocketMetricsListener = (
@@ -21,6 +21,10 @@ export interface WebSocketMetrics {
   getSnapshot(): WebSocketMetricsSnapshot;
 
   subscribe(listener: WebSocketMetricsListener): () => void;
+}
+
+export interface CreateWebSocketMetricsOptions {
+  readonly groupBy?: (url: string) => string;
 }
 
 export interface CreateWebSocketMetricsResult {
@@ -58,43 +62,15 @@ const freezeTraffic = (
     received: Object.freeze({ ...traffic.received }),
   });
 
-class ReadonlyTrafficMap extends Map<string, WebSocketTrafficMetrics> {
-  constructor(entries: Iterable<readonly [string, WebSocketTrafficMetrics]>) {
-    super(entries);
-    Object.freeze(this);
-  }
-
-  override set(url: string, traffic: WebSocketTrafficMetrics): this {
-    this.assertMutable();
-    return super.set(url, traffic);
-  }
-
-  override delete(url: string): boolean {
-    this.assertMutable();
-    return super.delete(url);
-  }
-
-  override clear(): void {
-    this.assertMutable();
-    super.clear();
-  }
-
-  // The map is frozen right after construction, which ends the mutable phase.
-  private assertMutable(): void {
-    if (Object.isFrozen(this)) {
-      throw new TypeError('WebSocket metrics snapshots are read-only');
-    }
-  }
-}
-
 const createSnapshot = (
-  trafficByUrl: ReadonlyMap<string, MutableTrafficMetrics>,
+  trafficByKey: ReadonlyMap<string, MutableTrafficMetrics>,
 ): WebSocketMetricsSnapshot => {
   const total = createTraffic();
-  const entries: [string, WebSocketTrafficMetrics][] = [];
+  // A null prototype makes keys such as "__proto__" plain own properties.
+  const byKey: Record<string, WebSocketTrafficMetrics> = Object.create(null);
 
-  for (const [url, traffic] of trafficByUrl) {
-    entries.push([url, freezeTraffic(traffic)]);
+  for (const [key, traffic] of trafficByKey) {
+    byKey[key] = freezeTraffic(traffic);
     total.sent.bytes += traffic.sent.bytes;
     total.sent.messages += traffic.sent.messages;
     total.received.bytes += traffic.received.bytes;
@@ -103,12 +79,16 @@ const createSnapshot = (
 
   return Object.freeze({
     total: freezeTraffic(total),
-    byUrl: new ReadonlyTrafficMap(entries),
+    byKey: Object.freeze(byKey),
   });
 };
 
-export function createWebSocketMetrics(): CreateWebSocketMetricsResult {
-  const trafficByUrl = new Map<string, MutableTrafficMetrics>();
+export function createWebSocketMetrics(
+  options: CreateWebSocketMetricsOptions = {},
+): CreateWebSocketMetricsResult {
+  const groupBy = options.groupBy ?? ((url: string) => url);
+  const trafficByKey = new Map<string, MutableTrafficMetrics>();
+  const groupKeys = new WeakMap<WebSocket, string>();
   const subscriptions = new Set<Subscription>();
   const encoder = new TextEncoder();
   const scratch = new Uint8Array(4096);
@@ -116,7 +96,7 @@ export function createWebSocketMetrics(): CreateWebSocketMetricsResult {
   let snapshot: WebSocketMetricsSnapshot | undefined;
   let frameId: number | undefined;
 
-  // Encodes into a reusable buffer in chunks so no per-message copy is made.
+  // Reuses a bounded encoding buffer to avoid allocating a full encoded copy.
   const utf8ByteLength = (text: string): number => {
     let bytes = 0;
     for (let offset = 0; offset < text.length;) {
@@ -138,7 +118,7 @@ export function createWebSocketMetrics(): CreateWebSocketMetricsResult {
   };
 
   const getSnapshot = (): WebSocketMetricsSnapshot =>
-    (snapshot ??= createSnapshot(trafficByUrl));
+    (snapshot ??= createSnapshot(trafficByKey));
 
   const notify = (
     subscription: Subscription,
@@ -163,15 +143,15 @@ export function createWebSocketMetrics(): CreateWebSocketMetricsResult {
   };
 
   const record = (
-    url: string,
+    key: string,
     direction: keyof MutableTrafficMetrics,
     payload: Payload,
   ) => {
     const bytes = payloadBytes(payload);
-    let traffic = trafficByUrl.get(url);
+    let traffic = trafficByKey.get(key);
     if (traffic === undefined) {
       traffic = createTraffic();
-      trafficByUrl.set(url, traffic);
+      trafficByKey.set(key, traffic);
     }
     traffic[direction].bytes += bytes;
     traffic[direction].messages += 1;
@@ -203,8 +183,10 @@ export function createWebSocketMetrics(): CreateWebSocketMetricsResult {
   class MetricsWebSocket extends WebSocket {
     constructor(url: string | URL, protocols?: string | string[]) {
       super(url, protocols);
+      const key = groupBy(this.url);
+      groupKeys.set(this, key);
       this.addEventListener('message', (event) => {
-        record(this.url, 'received', event.data);
+        record(key, 'received', event.data);
       });
     }
 
@@ -212,7 +194,7 @@ export function createWebSocketMetrics(): CreateWebSocketMetricsResult {
       const wasOpen = this.readyState === WebSocket.OPEN;
       super.send(data);
       if (wasOpen) {
-        record(this.url, 'sent', data);
+        record(groupKeys.get(this) as string, 'sent', data);
       }
     }
   }

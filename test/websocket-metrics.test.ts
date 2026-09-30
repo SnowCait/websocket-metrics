@@ -1,14 +1,18 @@
 import { afterEach, describe, expect, inject, it, vi } from 'vitest';
 import { createWebSocketMetrics } from '../src/index.js';
-import type { WebSocketMetricsSnapshot } from '../src/index.js';
+import type {
+  CreateWebSocketMetricsOptions,
+  WebSocketMetricsSnapshot,
+} from '../src/index.js';
 
 const baseUrl = inject('wsBaseUrl');
 const NativeWebSocket = globalThis.WebSocket;
 
 const sockets: WebSocket[] = [];
 
-const setup = () => {
-  const { WebSocket: MetricsWebSocket, metrics } = createWebSocketMetrics();
+const setup = (options?: CreateWebSocketMetricsOptions) => {
+  const { WebSocket: MetricsWebSocket, metrics } =
+    createWebSocketMetrics(options);
 
   const create = (path = '/', protocols?: string | string[]) => {
     const socket = new MetricsWebSocket(`${baseUrl}${path}`, protocols);
@@ -63,7 +67,7 @@ afterEach(() => {
 });
 
 describe('snapshot', () => {
-  it('starts with all zeros and no URLs', () => {
+  it('starts with all zeros and no keys', () => {
     const { metrics } = setup();
 
     const snapshot = metrics.getSnapshot();
@@ -72,7 +76,7 @@ describe('snapshot', () => {
       sent: { bytes: 0, messages: 0 },
       received: { bytes: 0, messages: 0 },
     });
-    expect(snapshot.byUrl.size).toBe(0);
+    expect(snapshot.byKey).toEqual({});
   });
 
   it('returns the latest values without waiting for a notification flush', async () => {
@@ -97,7 +101,7 @@ describe('snapshot', () => {
     const after = metrics.getSnapshot();
 
     expect(before.total.sent).toEqual({ bytes: 3, messages: 1 });
-    expect(before.byUrl.get(socket.url)?.sent).toEqual({
+    expect(before.byKey[socket.url]?.sent).toEqual({
       bytes: 3,
       messages: 1,
     });
@@ -113,16 +117,46 @@ describe('snapshot', () => {
     expect(() => {
       (snapshot.total.sent as { bytes: number }).bytes = 999;
     }).toThrow(TypeError);
-    expect(() => (snapshot.byUrl as Map<string, unknown>).clear()).toThrow(
-      TypeError,
-    );
-    expect(() =>
-      (snapshot.byUrl as Map<string, unknown>).set('ws://other/', {}),
-    ).toThrow(TypeError);
+    expect(() => {
+      (snapshot.byKey[socket.url]?.sent as { bytes: number }).bytes = 999;
+    }).toThrow(TypeError);
+    expect(() => {
+      (snapshot.byKey as Record<string, unknown>)['ws://other/'] = {};
+    }).toThrow(TypeError);
+    expect(() => {
+      delete (snapshot.byKey as Record<string, unknown>)[socket.url];
+    }).toThrow(TypeError);
 
     const next = metrics.getSnapshot();
     expect(next.total.sent).toEqual({ bytes: 3, messages: 1 });
-    expect([...next.byUrl.keys()]).toEqual([socket.url]);
+    expect(next.byKey).toEqual({
+      [socket.url]: {
+        sent: { bytes: 3, messages: 1 },
+        received: { bytes: 0, messages: 0 },
+      },
+    });
+  });
+
+  it('keeps every key when serialized to JSON', async () => {
+    const { metrics, connect } = setup();
+    const socket = await connect();
+
+    socket.send('abc');
+    await vi.waitFor(() =>
+      expect(metrics.getSnapshot().total.received.messages).toBe(1),
+    );
+    const snapshot = metrics.getSnapshot();
+
+    const traffic = {
+      sent: { bytes: 3, messages: 1 },
+      received: { bytes: 3, messages: 1 },
+    };
+    expect(Object.keys(snapshot.byKey)).toEqual([socket.url]);
+    expect(snapshot.byKey[socket.url]).toEqual(traffic);
+    expect(JSON.parse(JSON.stringify(snapshot))).toEqual({
+      total: traffic,
+      byKey: { [socket.url]: traffic },
+    });
   });
 });
 
@@ -297,13 +331,13 @@ describe('received metrics', () => {
   );
 });
 
-describe('per-URL metrics', () => {
-  it('aggregates sockets of the same URL and derives the total from URLs', async () => {
+describe('grouping', () => {
+  it('groups by the whole WebSocket URL by default and derives the total', async () => {
     const { metrics, connect } = setup();
     const [a1, a2, b] = await Promise.all([
-      connect('/a'),
-      connect('/a'),
-      connect('/b'),
+      connect('/a?id=1'),
+      connect('/a?id=1'),
+      connect('/a?id=2'),
     ]);
 
     a1.send('hi');
@@ -313,22 +347,86 @@ describe('per-URL metrics', () => {
     await vi.waitFor(() =>
       expect(metrics.getSnapshot().total.received.messages).toBe(3),
     );
-    const { total, byUrl } = metrics.getSnapshot();
-    expect(Object.fromEntries(byUrl)).toEqual({
-      [a1.url]: {
+    const { total, byKey } = metrics.getSnapshot();
+    expect(byKey).toEqual({
+      [`${baseUrl}/a?id=1`]: {
         sent: { bytes: 5, messages: 2 },
         received: { bytes: 5, messages: 2 },
       },
-      [b.url]: {
+      [`${baseUrl}/a?id=2`]: {
         sent: { bytes: 5, messages: 1 },
         received: { bytes: 5, messages: 1 },
       },
     });
-    expect(a1.url).toBe(a2.url);
     expect(total).toEqual({
       sent: { bytes: 10, messages: 3 },
       received: { bytes: 10, messages: 3 },
     });
+  });
+
+  it('calls groupBy once per socket with the native WebSocket URL', async () => {
+    const groupBy = vi.fn(() => 'key');
+    const { metrics, connect } = setup({ groupBy });
+
+    const socket = await connect('');
+    socket.send('a');
+    socket.send('b');
+    await vi.waitFor(() =>
+      expect(metrics.getSnapshot().total.received.messages).toBe(2),
+    );
+
+    expect(socket.url).toBe(`${baseUrl}/`);
+    expect(groupBy).toHaveBeenCalledTimes(1);
+    expect(groupBy).toHaveBeenCalledWith(socket.url);
+  });
+
+  it('aggregates sent and received traffic of different URLs under one key', async () => {
+    const { metrics, connect } = setup({
+      groupBy(url) {
+        const parsed = new URL(url);
+        return `${parsed.origin}${parsed.pathname}`;
+      },
+    });
+    const [a, b] = await Promise.all([
+      connect('/socket?token=a'),
+      connect('/socket?token=b'),
+    ]);
+
+    a.send('hi');
+    b.send('hey');
+
+    await vi.waitFor(() =>
+      expect(metrics.getSnapshot().total.received.messages).toBe(2),
+    );
+    expect(metrics.getSnapshot().byKey).toEqual({
+      [`${baseUrl}/socket`]: {
+        sent: { bytes: 5, messages: 2 },
+        received: { bytes: 5, messages: 2 },
+      },
+    });
+  });
+
+  it('keeps a "__proto__" key as an own property', async () => {
+    const { metrics, connect } = setup({ groupBy: () => '__proto__' });
+    const socket = await connect();
+
+    socket.send('abc');
+    await vi.waitFor(() =>
+      expect(metrics.getSnapshot().total.received.messages).toBe(1),
+    );
+
+    const { byKey } = metrics.getSnapshot();
+    const traffic = {
+      sent: { bytes: 3, messages: 1 },
+      received: { bytes: 3, messages: 1 },
+    };
+    expect(Object.keys(byKey)).toEqual(['__proto__']);
+    expect(Object.getOwnPropertyDescriptor(byKey, '__proto__')?.value).toEqual(
+      traffic,
+    );
+    expect(JSON.stringify(byKey)).toBe(
+      JSON.stringify({ ['__proto__']: traffic }),
+    );
   });
 });
 

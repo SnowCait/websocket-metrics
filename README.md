@@ -1,6 +1,6 @@
 # websocket-metrics
 
-A small library that wraps the browser's `WebSocket` and measures the bytes and messages of its application payloads, in total and per WebSocket URL.
+A small library that wraps the browser's `WebSocket` and measures the bytes and messages of its application payloads, in total and per group of WebSocket URLs.
 
 **This library is browser-only.** It targets the Window context and uses `WebSocket`, `requestAnimationFrame`, `TextEncoder` and `Blob` directly. Node.js and Workers are not supported. It is published as ESM only.
 
@@ -33,15 +33,37 @@ const unsubscribe = metrics.subscribe((snapshot) => {
 
 `MetricsWebSocket` extends the native `WebSocket` and can be used in its place. The global `WebSocket` is not modified, so only sockets created through `MetricsWebSocket` are measured. Events and payloads are passed to your application unchanged.
 
+### `createWebSocketMetrics(options?)`
+
+By default, metrics are grouped by the whole `WebSocket.url` of each socket, with no further normalization. Pass `groupBy` to choose the key yourself:
+
+```ts
+const { WebSocket: MetricsWebSocket, metrics } = createWebSocketMetrics({
+  groupBy(url) {
+    const parsed = new URL(url);
+    return `${parsed.origin}${parsed.pathname}`;
+  },
+});
+```
+
+`groupBy` receives `WebSocket.url` as exposed by the native socket, which is the URL serialized by the browser rather than the string passed to the constructor. It is called once per socket, when the socket is constructed. Sockets whose URLs map to the same key are summed together.
+
+If your URLs contain secrets such as tokens, or query parameters that vary per connection such as session IDs, use `groupBy` to map them to a stable key. Otherwise these values become snapshot keys, and every distinct URL adds an entry that is kept for the lifetime of the metrics.
+
 ### `metrics.getSnapshot()`
 
-Returns the metrics as of the call. Counters are updated as soon as traffic happens, so the result is always current. The returned snapshot is immutable and never changes afterwards. `total` is derived from `byUrl`, so both always agree.
+Returns the metrics as of the call. Counters are updated as soon as traffic happens, without waiting for an animation frame, so the result is always current. The returned snapshot is immutable and never changes afterwards. `total` is derived from `byKey`, so both always agree.
 
 ### `metrics.subscribe(listener)`
 
 Calls `listener` immediately with the current snapshot, then again after the metrics change. Notifications are batched with `requestAnimationFrame`, so `listener` is called at most once per animation frame and all subscribers of one notification receive the same snapshot object. Nothing is scheduled while there are no subscribers.
 
+Because notifications follow animation frames, browsers may pause or throttle them while the page is in the background or not rendered. Counting is not affected, and `getSnapshot()` still returns the latest values.
+
 Returns a function that unsubscribes the listener.
+
+> [!NOTE]
+> Sending metrics through a measured socket from inside `listener` changes the metrics, which triggers another notification on the next frame, and so on. The library does not prevent this loop. To report metrics, send them through a transport that is not measured, such as the native `WebSocket` or `fetch()`, or make sure the reporting does not feed back into the notifications.
 
 ## Types
 
@@ -58,7 +80,7 @@ interface WebSocketTrafficMetrics {
 
 interface WebSocketMetricsSnapshot {
   readonly total: WebSocketTrafficMetrics;
-  readonly byUrl: ReadonlyMap<string, WebSocketTrafficMetrics>;
+  readonly byKey: Readonly<Record<string, WebSocketTrafficMetrics>>;
 }
 
 type WebSocketMetricsListener = (snapshot: WebSocketMetricsSnapshot) => void;
@@ -67,9 +89,22 @@ interface WebSocketMetrics {
   getSnapshot(): WebSocketMetricsSnapshot;
   subscribe(listener: WebSocketMetricsListener): () => void;
 }
+
+interface CreateWebSocketMetricsOptions {
+  readonly groupBy?: (url: string) => string;
+}
+
+interface CreateWebSocketMetricsResult {
+  readonly WebSocket: typeof WebSocket;
+  readonly metrics: WebSocketMetrics;
+}
+
+function createWebSocketMetrics(
+  options?: CreateWebSocketMetricsOptions,
+): CreateWebSocketMetricsResult;
 ```
 
-`byUrl` is keyed by `WebSocket.url` as exposed by the socket (no extra normalization). Sockets with the same URL are summed together, and a URL appears once it has sent or received a message.
+`byKey` is an ordinary object (not a `Map`) keyed by the grouping key, so a snapshot can be passed to `JSON.stringify()` as is. A key appears once a socket in its group has sent or received a message. The object has a null prototype, so keys such as `__proto__` or `constructor` are stored as ordinary entries.
 
 ## What is measured
 
