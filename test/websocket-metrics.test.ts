@@ -439,23 +439,16 @@ describe('grouping', () => {
     );
   });
 
-  it('stores a key that is not a string under its string form', async () => {
-    const { metrics, connect } = setup({
-      groupBy: ((url: string) => (url.endsWith('/a') ? 1 : '1')) as never,
-    });
-    const [a, b] = await Promise.all([connect('/a'), connect('/b')]);
+  it('closes the socket and throws a TypeError when groupBy returns a non-string', async () => {
+    const { MetricsWebSocket } = setup({ groupBy: (() => 1) as never });
+    const close = vi.spyOn(NativeWebSocket.prototype, 'close');
 
-    a.send('abc');
-    b.send('abc');
+    expect(() => new MetricsWebSocket(`${baseUrl}/`)).toThrow(TypeError);
 
-    const { total, byKey } = metrics.getSnapshot();
-    expect(byKey).toEqual({
-      '1': {
-        sent: { bytes: 6, messages: 2 },
-        received: { bytes: 0, messages: 0 },
-      },
-    });
-    expect(total.sent).toEqual({ bytes: 6, messages: 2 });
+    expect(close).toHaveBeenCalledTimes(1);
+    const socket = close.mock.contexts[0] as WebSocket;
+    await once(socket, 'close');
+    expect(socket.readyState).toBe(NativeWebSocket.CLOSED);
   });
 
   it.each(['MetricsWebSocket', 'a subclass that overrides close()'])(

@@ -186,9 +186,13 @@ export function createWebSocketMetrics(
     constructor(url: string | URL, protocols?: string | string[]) {
       super(url, protocols);
       try {
-        // String() keeps byKey, whose keys are strings, in line with total
-        // even if a JavaScript caller returns another type.
-        this.#groupKey = String(groupBy(this.url));
+        const key: unknown = groupBy(this.url);
+        if (typeof key !== 'string') {
+          throw new TypeError(
+            `groupBy must return a string, got ${typeof key}`,
+          );
+        }
+        this.#groupKey = key;
       } catch (error) {
         // The caller never receives this socket, so it must not stay open.
         // super.close() bypasses subclass overrides, which cannot run before

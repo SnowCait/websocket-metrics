@@ -46,7 +46,7 @@ const { WebSocket: MetricsWebSocket, metrics } = createWebSocketMetrics({
 });
 ```
 
-`groupBy` receives `WebSocket.url` as exposed by the native socket, which is the URL serialized by the browser rather than the string passed to the constructor. It is called once per socket, when the socket is constructed. If it throws, the socket is closed and the error is rethrown from the constructor. Sockets whose URLs map to the same key are summed together.
+`groupBy` receives `WebSocket.url` as exposed by the native socket, which is the URL serialized by the browser rather than the string passed to the constructor. It is called once per socket, when the socket is constructed. It must return a string. If it throws, the socket is closed and the error is rethrown from the constructor. If it returns anything else, the socket is closed and the constructor throws a `TypeError`. Sockets whose URLs map to the same key are summed together.
 
 If your URLs contain secrets such as tokens, or query parameters that vary per connection such as session IDs, use `groupBy` to map them to a stable key. Otherwise these values become snapshot keys, and every distinct URL adds an entry that is kept for the lifetime of the metrics.
 
