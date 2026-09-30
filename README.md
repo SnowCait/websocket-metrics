@@ -46,7 +46,7 @@ const { WebSocket: MetricsWebSocket, metrics } = createWebSocketMetrics({
 });
 ```
 
-`groupBy` receives `WebSocket.url` as exposed by the native socket, which is the URL serialized by the browser rather than the string passed to the constructor. It is called once per socket, when the socket is constructed. Sockets whose URLs map to the same key are summed together.
+`groupBy` receives `WebSocket.url` as exposed by the native socket, which is the URL serialized by the browser rather than the string passed to the constructor. It is called once per socket, when the socket is constructed. If it throws, the socket is closed and the error is rethrown from the constructor. Sockets whose URLs map to the same key are summed together.
 
 If your URLs contain secrets such as tokens, or query parameters that vary per connection such as session IDs, use `groupBy` to map them to a stable key. Otherwise these values become snapshot keys, and every distinct URL adds an entry that is kept for the lifetime of the metrics.
 
@@ -104,7 +104,7 @@ function createWebSocketMetrics(
 ): CreateWebSocketMetricsResult;
 ```
 
-`byKey` is an ordinary object (not a `Map`) keyed by the grouping key, so a snapshot can be passed to `JSON.stringify()` as is. A key appears once a socket in its group has sent or received a message. The object has a null prototype, so keys such as `__proto__` or `constructor` are stored as ordinary entries.
+`byKey` is an ordinary object (not a `Map`) keyed by the grouping key, so a snapshot can be passed to `JSON.stringify()` as is. A key appears once a socket in its group has sent or received a message. Keys such as `__proto__` or `constructor` are stored as own properties like any other key.
 
 ## What is measured
 

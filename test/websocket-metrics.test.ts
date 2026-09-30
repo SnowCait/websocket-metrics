@@ -137,7 +137,7 @@ describe('snapshot', () => {
     });
   });
 
-  it('keeps every key when serialized to JSON', async () => {
+  it('exposes byKey as an ordinary object that keeps every key in JSON', async () => {
     const { metrics, connect } = setup();
     const socket = await connect();
 
@@ -151,6 +151,7 @@ describe('snapshot', () => {
       sent: { bytes: 3, messages: 1 },
       received: { bytes: 3, messages: 1 },
     };
+    expect(Object.getPrototypeOf(snapshot.byKey)).toBe(Object.prototype);
     expect(Object.keys(snapshot.byKey)).toEqual([socket.url]);
     expect(snapshot.byKey[socket.url]).toEqual(traffic);
     expect(JSON.parse(JSON.stringify(snapshot))).toEqual({
@@ -406,13 +407,19 @@ describe('grouping', () => {
     });
   });
 
-  it('keeps a "__proto__" key as an own property', async () => {
-    const { metrics, connect } = setup({ groupBy: () => '__proto__' });
-    const socket = await connect();
+  it('keeps "__proto__" and "constructor" keys as own data properties', async () => {
+    const { metrics, connect } = setup({
+      groupBy: (url) => new URL(url).pathname.slice(1),
+    });
+    const [proto, ctor] = await Promise.all([
+      connect('/__proto__'),
+      connect('/constructor'),
+    ]);
 
-    socket.send('abc');
+    proto.send('abc');
+    ctor.send('abc');
     await vi.waitFor(() =>
-      expect(metrics.getSnapshot().total.received.messages).toBe(1),
+      expect(metrics.getSnapshot().total.received.messages).toBe(2),
     );
 
     const { byKey } = metrics.getSnapshot();
@@ -420,13 +427,40 @@ describe('grouping', () => {
       sent: { bytes: 3, messages: 1 },
       received: { bytes: 3, messages: 1 },
     };
-    expect(Object.keys(byKey)).toEqual(['__proto__']);
+    expect(Object.getPrototypeOf(byKey)).toBe(Object.prototype);
+    expect(Object.keys(byKey)).toEqual(['__proto__', 'constructor']);
     expect(Object.getOwnPropertyDescriptor(byKey, '__proto__')?.value).toEqual(
       traffic,
     );
+    expect(byKey['constructor']).toEqual(traffic);
+    expect('sent' in {}).toBe(false);
     expect(JSON.stringify(byKey)).toBe(
-      JSON.stringify({ ['__proto__']: traffic }),
+      JSON.stringify({ ['__proto__']: traffic, constructor: traffic }),
     );
+  });
+
+  it('closes the socket and rethrows when groupBy throws', async () => {
+    const error = new Error('groupBy failed');
+    const { MetricsWebSocket } = setup({
+      groupBy() {
+        throw error;
+      },
+    });
+    const close = vi.spyOn(NativeWebSocket.prototype, 'close');
+
+    let thrown: unknown;
+    try {
+      new MetricsWebSocket(`${baseUrl}/`);
+    } catch (caught) {
+      thrown = caught;
+    }
+
+    expect(thrown).toBe(error);
+    expect(close).toHaveBeenCalledTimes(1);
+    const socket = close.mock.contexts[0] as WebSocket;
+    expect(socket.readyState).toBe(NativeWebSocket.CLOSING);
+    await once(socket, 'close');
+    expect(socket.readyState).toBe(NativeWebSocket.CLOSED);
   });
 });
 

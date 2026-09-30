@@ -66,11 +66,10 @@ const createSnapshot = (
   trafficByKey: ReadonlyMap<string, MutableTrafficMetrics>,
 ): WebSocketMetricsSnapshot => {
   const total = createTraffic();
-  // A null prototype makes keys such as "__proto__" plain own properties.
-  const byKey: Record<string, WebSocketTrafficMetrics> = Object.create(null);
+  const entries: [string, WebSocketTrafficMetrics][] = [];
 
   for (const [key, traffic] of trafficByKey) {
-    byKey[key] = freezeTraffic(traffic);
+    entries.push([key, freezeTraffic(traffic)]);
     total.sent.bytes += traffic.sent.bytes;
     total.sent.messages += traffic.sent.messages;
     total.received.bytes += traffic.received.bytes;
@@ -79,7 +78,9 @@ const createSnapshot = (
 
   return Object.freeze({
     total: freezeTraffic(total),
-    byKey: Object.freeze(byKey),
+    // Object.fromEntries() defines own data properties, so keys such as
+    // "__proto__" never touch the prototype.
+    byKey: Object.freeze(Object.fromEntries(entries)),
   });
 };
 
@@ -183,7 +184,15 @@ export function createWebSocketMetrics(
   class MetricsWebSocket extends WebSocket {
     constructor(url: string | URL, protocols?: string | string[]) {
       super(url, protocols);
-      const key = groupBy(this.url);
+      let key: string;
+      try {
+        key = groupBy(this.url);
+      } catch (error) {
+        // The caller never receives this socket, so it must not stay open.
+        // close() without arguments does not throw.
+        this.close();
+        throw error;
+      }
       groupKeys.set(this, key);
       this.addEventListener('message', (event) => {
         record(key, 'received', event.data);
