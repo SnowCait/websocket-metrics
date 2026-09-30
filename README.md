@@ -2,7 +2,7 @@
 
 A small library that wraps the browser's `WebSocket` and measures the bytes and messages of its application payloads, in total and per group of WebSocket URLs.
 
-**This library is browser-only.** It targets the Window context and uses `WebSocket`, `requestAnimationFrame`, `TextEncoder` and `Blob` directly. Node.js and Workers are not supported. It is published as ESM only.
+**This library is browser-only.** It targets the Window context and uses `WebSocket`, `requestAnimationFrame`, `TextEncoder` and `Blob` directly. Node.js and Workers are not supported. It is published as ESM only and targets ES2022 JavaScript environments.
 
 ## Installation
 

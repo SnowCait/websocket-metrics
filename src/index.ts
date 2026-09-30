@@ -89,7 +89,6 @@ export function createWebSocketMetrics(
 ): CreateWebSocketMetricsResult {
   const groupBy = options.groupBy ?? ((url: string) => url);
   const trafficByKey = new Map<string, MutableTrafficMetrics>();
-  const groupKeys = new WeakMap<WebSocket, string>();
   const subscriptions = new Set<Subscription>();
   const encoder = new TextEncoder();
   const scratch = new Uint8Array(4096);
@@ -182,20 +181,20 @@ export function createWebSocketMetrics(
   };
 
   class MetricsWebSocket extends WebSocket {
+    readonly #groupKey: string;
+
     constructor(url: string | URL, protocols?: string | string[]) {
       super(url, protocols);
-      let key: string;
       try {
-        key = groupBy(this.url);
+        this.#groupKey = groupBy(this.url);
       } catch (error) {
         // The caller never receives this socket, so it must not stay open.
         // close() without arguments does not throw.
         this.close();
         throw error;
       }
-      groupKeys.set(this, key);
       this.addEventListener('message', (event) => {
-        record(key, 'received', event.data);
+        record(this.#groupKey, 'received', event.data);
       });
     }
 
@@ -203,7 +202,7 @@ export function createWebSocketMetrics(
       const wasOpen = this.readyState === WebSocket.OPEN;
       super.send(data);
       if (wasOpen) {
-        record(groupKeys.get(this) as string, 'sent', data);
+        record(this.#groupKey, 'sent', data);
       }
     }
   }
